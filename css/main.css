@@ -2,8 +2,8 @@ body {
     font-family: sans-serif;
   }
   
-  video {
+video {
     max-width: 100%;
-    width: 700px;
-  }
+    width: 320px;
+}
   
