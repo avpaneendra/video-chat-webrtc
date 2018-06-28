@@ -1,159 +1,200 @@
-let sendChannel;
-let receiveChannel;
-
-let localPeerConnection;
-let remotePeerConnection;
+'use strict'
 
 
-var dataChannelSend = document.querySelector('textarea#dataChannelSend');
-var dataChannelReceive = document.querySelector('textarea#dataChannelReceive');
-let start =  document.querySelector('button#startButton')
-let send = document.querySelector('button#sendButton')
-let close = document.querySelector('button#closeButton')
+// Flag to distinguish local peer from remote peer
+let isInitiater = false;
+let isStarted = false;
+let isChannelReady = false;
 
-send.disabled = true;
-close.disabled = true;
+let localStream;
+let remoteStream;
+let peerConnection;
 
-let servers;
-let pcConstraints;
-let dataConstraints;
+let socket = io.connect();
 
-start.onclick = createConnection;
-send.onclick = sendMessage;
-close.onclick = closeConnection;
+// Setting static room
+let room = 'foo';
 
-function sendMessage(event){
-    console.log(`Send Message: ${dataChannelSend.value}`)
-    sendChannel.send(dataChannelSend.value)
-    dataChannelSend.value = '';
+
+if (room !== ''){
+    socket.emit('create or join',room)
+    console.log('Attempted to create room')
 }
 
-function closeConnection(event){
-    start.disabled = false;
-    send.disabled = true;
-    close.disabled = true;
-    
-    console.log('Closing data channel')
-    sendChannel.close()
-    receiveChannel.close()
+socket.on('join',(room) => {
+    console.log(`Person joined ${room}`)
+    isChannelReady = true;
+})
 
-    console.log('Closing peer connection')
-    localPeerConnection.close()
-    remotePeerConnection.close()
-    localPeerConnection = null;
-    remotePeerConnection = null;
+socket.on('joined',(socketId, room) => {
+    console.log(`${socketId} joined the ${room}`)
+    isChannelReady = true;
+})
 
-    dataChannelSend.value = '';
-    dataChannelReceive.value = '';
-    dataChannelSend.disabled = true;
-    
+socket.on('created',(room) => {
+    isInitiater = true;
+    console.log(`${room} room created`)
+})
+
+socket.on('log', array => {
+    console.log.apply(console, array)
+})
+
+socket.on('ready', () => {
+    console.log('Room is ready')
+})
+
+socket.on('full', (room) => {
+    console.log('Room is already is filled')
+})
+
+socket.on('message', message => {
+    console.log('Client received message: ', message)
+    if (message === 'got user media'){
+        maybeStart()
+    }else if(message.type === 'offer'){
+        if(!isStarted && !isInitiater){
+            maybeStart()
+        }
+
+        // Adding remote description for remote peer
+        peerConnection.setRemoteDescription(new RTCSessionDescription(message))
+        doAnswer();
+    }else if(message.type === 'answer' && isStarted){
+
+        // Adding remote description for local peer
+        peerConnection.setRemoteDescription(new RTCSessionDescription(message))
+
+    }else if(message.type === 'candidate' && isStarted){
+        let candidate = new RTCIceCandidate({
+            sdpMLineIndex: message.label,
+            candidate : message.candidate
+        });
+        peerConnection.addIceCandidate(candidate)
+        console.log('Ice candidate added')
+    }
+})
+
+
+function sendMessage(message) {
+    console.log('Client sending message: ', message);
+    socket.emit('message', message);
 }
 
-function createConnection(){
-    console.log('Using SCTP protocol for Arbitary Data Transmission')
-    dataChannelSend.value = '';
+//////////////////////////////////////////
+//////////////////////////////////////////
 
-    localPeerConnection = new RTCPeerConnection(servers, pcConstraints)
-    localPeerConnection.onicecandidate = iceCallback1;
-    console.log('Created local Peer connection')
 
-    sendChannel = localPeerConnection.createDataChannel('sendDataChannel',dataConstraints)
-    sendChannel.onopen = onSendChannelStateChange;
-    sendChannel.onclose = onSendChannelStateChange;
-    console.log('Created local send channel')
+// Getting User Media
+var localVideo = document.querySelector('#localVideo');
+var remoteVideo = document.querySelector('#remoteVideo');
 
-    remotePeerConnection = new RTCPeerConnection(servers, pcConstraints)
-    remotePeerConnection.onicecandidate = iceCallback2;
-    remotePeerConnection.ondatachannel = receiveChannelCallback;
-    console.log('Created Remote Peer Connection')
-    
-    localPeerConnection.createOffer()
-    .then(offerAccepted)
-    .catch(handleError)
-    dataChannelSend.disabled = false;
-    start.disabled = true;
-    send.disabled = false;
-    close.disabled = false;
-}
+navigator.mediaDevices.getUserMedia({
+  audio: false,
+  video: true
+}).then(gotStream)
+.catch(gotUserMediaErrorHandler)
 
-function receiveChannelCallback(event){
-    console.log(`On Receive Channel Callback`)
-    if(event.channel){
-        receiveChannel = event.channel;
-        receiveChannel.onmessage = handleMessage;
-        receiveChannel.onopen = onReceiveChannelStateChange;
-        receiveChannel.onclose = onReceiveChannelStateChange;
+function gotStream(stream){
+    console.log('Adding local Stream')
+    localStream = stream;
+    localVideo.srcObject = stream;
+    sendMessage('got user media')
+    if(isInitiater){
+        maybeStart();
     }
 }
 
-function offerAccepted(description){
-    console.log('Offer Accepted')
-    if(description){
-        localPeerConnection.setLocalDescription(description)
-        remotePeerConnection.setRemoteDescription(description)
-        remotePeerConnection.createAnswer()
-        .then(answerAccepted)
-        .catch(handleError)
+///////////////////////////////////////////////
+//////////////////////////////////////////////
+
+function maybeStart(){
+    console.log('maybeStart >>>>>>>>>',isStarted, localStream, isChannelReady)
+    if(!isStarted && localStream !== 'undefined' && isChannelReady){
+        createPeerConnection();
+        peerConnection.addStream(localStream);
+        if(isInitiater){
+            doCall();
+        }
+        isStarted = true;
+        
     }
 }
 
-function answerAccepted(description){
-    console.log('Answer Accepted')
-    if(description){
-        localPeerConnection.setRemoteDescription(description)
-        remotePeerConnection.setLocalDescription(description)
+function createPeerConnection(){
+    console.log('Starting peer connection')
+    peerConnection = new RTCPeerConnection(null)
+
+    // Add the event handlers here
+    peerConnection.onicecandidate = handleIceCandidate;
+    peerConnection.onaddstream = handleAddStream;
+    peerConnection.onremovestream = handleRemoveStream;
+    console.log('Added event listeners')   
+}
+
+function handleIceCandidate(event){
+  console.log('icecandidate event: ', event);
+  if (event.candidate) {
+    sendMessage({
+      type: 'candidate',
+      label: event.candidate.sdpMLineIndex,
+      id: event.candidate.sdpMid,
+      candidate: event.candidate.candidate
+    });
+  } else {
+    console.log('End of candidates.');
+  }
+}
+
+function handleAddStream(event){
+    if(event.stream){
+        console.log('Adding remote Video to the page')
+        console.log(event.stream)
+        remoteStream = event.stream;
+        remoteVideo.srcObject = remoteStream;
     }
 }
-
-
-function iceCallback1(event){
-    console.log('On local Callback')
-    if(event.candidate){
-        localPeerConnection.addIceCandidate(
-            event.candidate
-        ).then(
-            successAddIceCandidate,
-        ).catch(
-            errorAddIceCandidate
-        )
-    }
+function handleRemoveStream(event){
+    remoteStream = null;
+    remoteVideo.srcObject = null;
+    console.log('Removing remove Video stream from the page')
 }
 
-function iceCallback2(event){
-    console.log('On Remote Callback')
-    if(event.candidate){
-        localPeerConnection.addIceCandidate(
-            event.candidate
-        ).then(
-            successAddIceCandidate,
-        ).catch(
-            errorAddIceCandidate
-        )
-    }
+function doCall(){
+    console.log('Creating Offer')
+    peerConnection.createOffer(handleOfferSuccess, handleOfferError)
+}
+
+function handleOfferSuccess(description) {
+    peerConnection.setLocalDescription(description)
+    sendMessage(description)
+}
+
+function doAnswer(){
+    console.log('Creating Answer')
+    peerConnection.createAnswer(handleAnswerSuccess, handleAnswerError)
+}
+
+function handleAnswerSuccess(description){
+    peerConnection.setLocalDescription(description)
+    sendMessage(description)
 }
 
 
-function handleError(event){
-    console.log(`Error occured in the event: ${event}`)
+
+/////////////////////////////////////////////////
+/////////////////////////////////////////////////
+
+// Error Handlers
+
+function gotUserMediaErrorHandler(error){
+    console.log(`Error in gotUserMediaHandler ${error}`)
 }
 
-function successAddIceCandidate(){
-    console.log(`Ice candidate added successfully`)
+function handleOfferError(error){
+    console.log(`Error in offer ${error}`)
 }
 
-function errorAddIceCandidate(error){
-    console.log(`Error in adding connection ice candidate`)
-}
-
-function onSendChannelStateChange(){
-    console.log(`Send Channel state ${sendChannel.readyState}`)
-}
-
-function onReceiveChannelStateChange(){
-    console.log(`Receive Channel state ${receiveChannel.readyState}`)
-}
-
-function handleMessage(event){
-    console.log(`Message: ${event.data}`)
-    dataChannelReceive.value = event.data
+function handleAnswerError(error){
+    console.log(`Error in answer ${error}`)
 }
