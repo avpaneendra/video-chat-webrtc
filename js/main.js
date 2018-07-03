@@ -72,6 +72,8 @@ socket.on('message', message => {
         });
         peerConnection.addIceCandidate(candidate)
         console.log('Ice candidate added')
+    }  else if (message === 'bye' && isStarted) {
+        handleRemoteHangup();
     }
 })
 
@@ -90,7 +92,7 @@ var localVideo = document.querySelector('#localVideo');
 var remoteVideo = document.querySelector('#remoteVideo');
 
 navigator.mediaDevices.getUserMedia({
-  audio: false,
+  audio: true,
   video: true
 }).then(gotStream)
 .catch(gotUserMediaErrorHandler)
@@ -198,3 +200,32 @@ function handleOfferError(error){
 function handleAnswerError(error){
     console.log(`Error in answer ${error}`)
 }
+
+
+//////////////////////////////////////////
+//////////////////////////////////////////
+
+// On Close
+
+window.onbeforeunload = function() {
+    sendMessage('bye');
+};
+
+function hangup() {
+    console.log('Hanging up.');
+    stop();
+    sendMessage('bye');
+}
+  
+function handleRemoteHangup() {
+    console.log('Session terminated.');
+    stop();
+    isInitiator = false;
+}
+
+function stop() {
+    isStarted = false;
+    pc.close();
+    pc = null;
+}
+  
